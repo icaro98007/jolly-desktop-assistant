@@ -1,0 +1,57 @@
+﻿services:
+  postgres_jolly:
+    image: postgres:16-alpine
+    container_name: postgres_jolly
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-jolly}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cambiar_esta_clave}
+      POSTGRES_DB: ${POSTGRES_DB:-jolly_db}
+      TZ: America/Bogota
+    volumes:
+      - postgres_jolly_data:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    networks:
+      - red_jolly
+
+  n8n_local:
+    image: n8nio/n8n:latest
+    container_name: n8n_local
+    restart: unless-stopped
+    ports:
+      - "6789:5678"
+    environment:
+      - N8N_HOST=localhost
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - GENERIC_TIMEZONE=America/Bogota
+      - TZ=America/Bogota
+      - N8N_SECURE_COOKIE=false
+    volumes:
+      - n8n_jolly_data:/home/node/.n8n
+    depends_on:
+      - postgres_jolly
+    networks:
+      - red_jolly
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    environment:
+      - TZ=America/Bogota
+    volumes:
+      - ollama_jolly_data:/root/.ollama
+    networks:
+      - red_jolly
+
+networks:
+  red_jolly:
+    driver: bridge
+
+volumes:
+  postgres_jolly_data:
+  n8n_jolly_data:
+  ollama_jolly_data:
