@@ -1,138 +1,186 @@
 import tkinter as tk
+import requests
 import threading
-import json
-import urllib.request
-import random
 import subprocess
+import math
+import time
+import random
 
-# --- CONFIGURACIÓN ---
-N8N_WEBHOOK_URL = "http://localhost:6789/webhook/jolly"
-COLOR_CHROMA = "#010101"
+# ==========================================
+# CONFIGURACIÓN PRINCIPAL
+# ==========================================
+WEBHOOK_URL = "http://localhost:6789/webhook/jolly"
+SESSION_ID = "jolly_desktop"
+COLOR_FONDO_TRANSPARENTE = "#010101"
+
+# Paletas Cyber-Neón por emoción
+TEMAS_EMOCION = {
+    "feliz": {
+        "neon": "#00F5D4",
+        "secundario": "#00BBF9",
+        "visor": "#071318",
+        "chasis": "#121824",
+        "estado": "● EN LÍNEA"
+    },
+    "pensando": {
+        "neon": "#FBBF24",
+        "secundario": "#F59E0B",
+        "visor": "#161208",
+        "chasis": "#1A1822",
+        "estado": "◌ PROCESANDO..."
+    },
+    "sorprendido": {
+        "neon": "#FF2A85",
+        "secundario": "#9B5DE5",
+        "visor": "#180814",
+        "chasis": "#1E1424",
+        "estado": "⚡ ALERTA"
+    },
+    "cansado": {
+        "neon": "#64748B",
+        "secundario": "#475569",
+        "visor": "#0B0E14",
+        "chasis": "#11141C",
+        "estado": "☾ REPOSO"
+    },
+    "neutral": {
+        "neon": "#38BDF8",
+        "secundario": "#818CF8",
+        "visor": "#09111E",
+        "chasis": "#131926",
+        "estado": "● ACTIVO"
+    }
+}
 
 
-class MascotaTkinter:
+class JollyCyberPet:
     def __init__(self, root):
         self.root = root
-        self.root.title("Jolly")
+        self.root.title("Jolly Cyber-Pet")
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
-        self.root.configure(bg=COLOR_CHROMA)
-        self.root.wm_attributes("-transparentcolor", COLOR_CHROMA)
+        self.root.wm_attributes("-transparentcolor", COLOR_FONDO_TRANSPARENTE)
+        self.root.configure(bg=COLOR_FONDO_TRANSPARENTE)
 
-        # Estado del personaje
+        # Posición inicial (esquina inferior derecha)
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        self.win_w = 340
+        self.win_h = 410
+        pos_x = screen_w - self.win_w - 35
+        pos_y = screen_h - self.win_h - 65
+        self.root.geometry(f"{self.win_w}x{self.win_h}+{pos_x}+{pos_y}")
+
+        # Variables de estado y animación
         self.emocion = "feliz"
-        self.emocion_previa = "feliz"
-        self.parpadeando = False
-        self.acariciando = False
+        self.hablando = False
         self.voz_activa = True
-        self.offset_y = 0
-        self.direccion = 1
+        self.tiempo = 0.0
+        self.parpadeo = False
+        self.proximo_parpadeo = time.time() + 3.0
         self.drag_x = 0
         self.drag_y = 0
-        self.ultimo_mensaje_usuario = ""
-        self.chat_visible = True
 
-        # Posición inicial en esquina inferior derecha
-        ancho_pantalla = self.root.winfo_screenwidth()
-        alto_pantalla = self.root.winfo_screenheight()
-        self.root.geometry(f"310x380+{ancho_pantalla - 340}+{alto_pantalla - 440}")
-
-        # --- GLOBO DE DIÁLOGO ESTILIZADO ---
-        self.globo = tk.Label(
-            self.root,
-            text="¡Hola! Ya tengo nuevo look y voz. Escríbeme algo abajo.",
-            wraplength=250,
-            justify="left",
-            font=("Segoe UI", 10),
-            bg="#0f172a",
-            fg="#f8fafc",
-            padx=14,
-            pady=10,
-            bd=1,
-            relief="solid"
-        )
-        self.globo.pack(pady=(5, 2))
-
-        # --- LIENZO DEL AVATAR (180x180) ---
+        # Canvas principal transparente
         self.canvas = tk.Canvas(
             self.root,
-            width=180,
-            height=180,
-            bg=COLOR_CHROMA,
+            width=self.win_w,
+            height=220,
+            bg=COLOR_FONDO_TRANSPARENTE,
             highlightthickness=0
         )
-        self.canvas.pack()
+        self.canvas.pack(side=tk.TOP)
 
-        # Eventos de arrastre y caricias
-        for widget in (self.canvas, self.globo):
-            widget.bind("<Button-1>", self.iniciar_arrastre)
-            widget.bind("<B1-Motion>", self.mover_ventana)
-            widget.bind("<Button-3>", self.mostrar_menu)
+        # Eventos de arrastre y menú contextual
+        self.canvas.bind("<ButtonPress-1>", self.iniciar_arrastre)
+        self.canvas.bind("<B1-Motion>", self.mover_ventana)
+        self.canvas.bind("<Button-3>", self.mostrar_menu)
 
-        self.canvas.bind("<Enter>", self.al_entrar_mouse)
-        self.canvas.bind("<Leave>", self.al_salir_mouse)
+        # Panel HUD de diálogo y entrada
+        self.construir_hud()
 
-        # --- CAJA DE TEXTO ---
-        self.entrada = tk.Entry(
-            self.root,
-            font=("Segoe UI", 10),
-            bg="#1e293b",
-            fg="#ffffff",
-            insertbackground="#38bdf8",
-            relief="flat",
-            width=30
-        )
-        self.entrada.pack(pady=(4, 10), ipady=6)
-        self.entrada.bind("<Return>", self.enviar_mensaje)
-        self.entrada.focus_set()
+        # Saludo inicial
+        self.mostrar_respuesta("¡Sistemas en línea! ¿Qué misión tenemos hoy?", "feliz", hablar=False)
 
-        # --- MENÚ CONTEXTUAL (CLIC DERECHO) ---
-        self.menu = tk.Menu(
-            self.root, tearoff=0, bg="#0f172a", fg="#f8fafc",
-            activebackground="#38bdf8", activeforeground="#0f172a"
-        )
-        self.menu.add_command(label="💬 Ocultar / Mostrar chat", command=self.alternar_chat)
-        self.menu.add_command(label="🔊 Silenciar / Activar voz", command=self.alternar_voz)
-        self.menu.add_command(label="✨ Cambiar ánimo (Probar)", command=self.ciclar_emocion)
-        self.menu.add_separator()
-        self.menu.add_command(label="❌ Cerrar a Jolly", command=self.root.destroy)
-
-        # Iniciar bucles de animación y parpadeo
+        # Bucle de animación a ~30 FPS
         self.animar()
-        self.programar_parpadeo()
 
-    def mostrar_menu(self, event):
-        self.menu.tk_popup(event.x_root, event.y_root)
+    def construir_hud(self):
+        # Contenedor principal del globo HUD
+        self.hud_frame = tk.Frame(
+            self.root,
+            bg="#0B101B",
+            highlightbackground="#00F5D4",
+            highlightthickness=2,
+            padx=10,
+            pady=8
+        )
+        self.hud_frame.pack(fill=tk.X, padx=12, pady=(0, 6))
 
-    def alternar_voz(self):
-        self.voz_activa = not self.voz_activa
-        estado = "activada" if self.voz_activa else "silenciada"
-        self.globo.config(text=f"Voz {estado}.")
+        # Barra superior del HUD (Nombre + Estado)
+        top_bar = tk.Frame(self.hud_frame, bg="#0B101B")
+        top_bar.pack(fill=tk.X, pady=(0, 4))
 
-    def alternar_chat(self):
-        if self.chat_visible:
-            self.entrada.pack_forget()
-            self.globo.pack_forget()
-            self.chat_visible = False
-        else:
-            self.globo.pack(before=self.canvas, pady=(5, 2))
-            self.entrada.pack(after=self.canvas, pady=(4, 10), ipady=6)
-            self.entrada.focus_set()
-            self.chat_visible = True
+        self.lbl_nombre = tk.Label(
+            top_bar,
+            text="JOLLY // AI-CORE",
+            font=("Consolas", 8, "bold"),
+            fg="#94A3B8",
+            bg="#0B101B"
+        )
+        self.lbl_nombre.pack(side=tk.LEFT)
 
-    def ciclar_emocion(self):
-        lista = ["feliz", "pensando", "sorprendido", "cansado", "neutral"]
-        idx = (lista.index(self.emocion) + 1) % len(lista) if self.emocion in lista else 0
-        self.emocion = lista[idx]
-        self.globo.config(text=f"Modo de prueba: {self.emocion.upper()}")
+        self.lbl_estado = tk.Label(
+            top_bar,
+            text="● EN LÍNEA",
+            font=("Consolas", 8, "bold"),
+            fg="#00F5D4",
+            bg="#0B101B"
+        )
+        self.lbl_estado.pack(side=tk.RIGHT)
 
-    def al_entrar_mouse(self, event):
-        if self.emocion != "pensando":
-            self.emocion_previa = self.emocion
-            self.acariciando = True
+        # Texto de respuesta
+        self.lbl_texto = tk.Label(
+            self.hud_frame,
+            text="",
+            font=("Segoe UI", 9),
+            fg="#F1F5F9",
+            bg="#0B101B",
+            wraplength=285,
+            justify=tk.LEFT,
+            anchor="w"
+        )
+        self.lbl_texto.pack(fill=tk.X, pady=(2, 8))
 
-    def al_salir_mouse(self, event):
-        self.acariciando = False
+        # Caja de entrada + Botón enviar
+        input_row = tk.Frame(self.hud_frame, bg="#151E2E", padx=4, pady=3)
+        input_row.pack(fill=tk.X)
+
+        self.entry = tk.Entry(
+            input_row,
+            font=("Segoe UI", 9),
+            bg="#151E2E",
+            fg="#FFFFFF",
+            insertbackground="#00F5D4",
+            relief=tk.FLAT,
+            borderwidth=0
+        )
+        self.entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 4))
+        self.entry.bind("<Return>", self.enviar_mensaje)
+
+        self.btn_enviar = tk.Button(
+            input_row,
+            text="➤",
+            font=("Segoe UI", 9, "bold"),
+            bg="#00F5D4",
+            fg="#061018",
+            activebackground="#00BBF9",
+            relief=tk.FLAT,
+            cursor="hand2",
+            padx=8,
+            command=self.enviar_mensaje
+        )
+        self.btn_enviar.pack(side=tk.RIGHT)
 
     def iniciar_arrastre(self, event):
         self.drag_x = event.x
@@ -143,159 +191,256 @@ class MascotaTkinter:
         y = self.root.winfo_y() + (event.y - self.drag_y)
         self.root.geometry(f"+{x}+{y}")
 
-    def programar_parpadeo(self):
-        espera = random.randint(2500, 5000)
-        self.root.after(espera, self.ejecutar_parpadeo)
+    def mostrar_menu(self, event):
+        menu = tk.Menu(self.root, tearoff=0, bg="#0F172A", fg="#F8FAFC", activebackground="#00F5D4", activeforeground="#061018")
+        estado_voz = "Silenciar voz" if self.voz_activa else "Activar voz"
+        menu.add_command(label=f"🔊 {estado_voz}", command=self.alternar_voz)
+        menu.add_separator()
+        menu.add_command(label="❌ Cerrar a Jolly", command=self.root.destroy)
+        menu.tk_popup(event.x_root, event.y_root)
 
-    def ejecutar_parpadeo(self):
-        self.parpadeando = True
-        self.root.after(140, self.terminar_parpadeo)
+    def alternar_voz(self):
+        self.voz_activa = not self.voz_activa
 
-    def terminar_parpadeo(self):
-        self.parpadeando = False
-        self.programar_parpadeo()
+    def calcular_mirada(self, cx, cy):
+        try:
+            mx = self.root.winfo_pointerx() - self.root.winfo_rootx()
+            my = self.root.winfo_pointery() - self.root.winfo_rooty()
+            dx = max(-6.0, min(6.0, (mx - cx) * 0.03))
+            dy = max(-4.0, min(4.0, (my - cy) * 0.03))
+            return dx, dy
+        except Exception:
+            return 0.0, 0.0
 
-    def dibujar_avatar(self):
+    def dibujar_robot(self):
         self.canvas.delete("all")
+        tema = TEMAS_EMOCION.get(self.emocion, TEMAS_EMOCION["neutral"])
+        neon = tema["neon"]
+        sec = tema["secundario"]
+        visor_bg = tema["visor"]
+        chasis = tema["chasis"]
 
-        paleta = {
-            "feliz": ("#38bdf8", "#0284c7", "#7dd3fc"),
-            "pensando": ("#a855f7", "#7e22ce", "#d8b4fe"),
-            "sorprendido": ("#f59e0b", "#b45309", "#fde68a"),
-            "cansado": ("#64748b", "#334155", "#94a3b8"),
-            "neutral": ("#10b981", "#047857", "#6ee7b7")
-        }
-        estado_actual = "feliz" if self.acariciando else self.emocion
-        color_principal, color_sombra, color_brillo = paleta.get(estado_actual, paleta["neutral"])
+        cx = self.win_w // 2
+        # Flotación sinusoidal suave
+        flote_y = math.sin(self.tiempo * 2.4) * 6.5
+        cy = 115 + flote_y
 
-        y = 32 + self.offset_y
-
-        # 1. Sombra flotante en el suelo
-        escala_sombra = int(self.offset_y * 1.2)
+        # 1. Sombra holográfica en la base
+        sombra_escala = 1.0 - (flote_y / 40.0)
+        sw = 52 * sombra_escala
         self.canvas.create_oval(
-            52 + escala_sombra, 162, 128 - escala_sombra, 174,
-            fill="#1e293b", outline=""
+            cx - sw, 198, cx + sw, 208,
+            fill="#0A121E", outline=neon, width=1
         )
 
-        # 2. Antena superior articulada
-        punta_x = 90 + (self.offset_y * 0.8)
-        self.canvas.create_line(90, y + 4, punta_x, y - 16, fill="#cbd5e1", width=3, capstyle="round")
-        self.canvas.create_oval(punta_x - 6, y - 22, punta_x + 6, y - 10, fill=color_principal, outline="#ffffff", width=2)
+        # 2. Aura exterior pulsante
+        pulso = math.sin(self.tiempo * 3.5) * 4
+        r_aura = 74 + pulso
+        self.canvas.create_oval(
+            cx - r_aura, cy - r_aura, cx + r_aura, cy + r_aura,
+            outline=sec, width=1, dash=(4, 4)
+        )
 
-        # 3. Auriculares / Orejas laterales
-        self.canvas.create_oval(24, y + 36, 44, y + 72, fill=color_sombra, outline="#ffffff", width=2)
-        self.canvas.create_oval(136, y + 36, 156, y + 72, fill=color_sombra, outline="#ffffff", width=2)
+        # 3. Propulsor inferior luminoso
+        llama_h = 10 + abs(math.sin(self.tiempo * 12)) * 7
+        self.canvas.create_polygon(
+            cx - 16, cy + 56,
+            cx + 16, cy + 56,
+            cx, cy + 56 + llama_h,
+            fill=neon, outline=""
+        )
 
-        # 4. Manitas flotantes laterales
-        mano_y = y + 78 - (self.offset_y * 0.6)
-        self.canvas.create_oval(20, mano_y, 36, mano_y + 18, fill="#f8fafc", outline=color_principal, width=2)
-        self.canvas.create_oval(144, mano_y, 160, mano_y + 18, fill="#f8fafc", outline=color_principal, width=2)
+        # 4. Antenas / Orejas Cyber-Tácticas laterales
+        inclinacion = -6 if self.emocion == "feliz" else (8 if self.emocion == "cansado" else 0)
+        # Izquierda
+        self.canvas.create_polygon(
+            cx - 58, cy - 18,
+            cx - 76, cy - 46 + inclinacion,
+            cx - 42, cy - 42,
+            fill=chasis, outline=neon, width=2
+        )
+        # Derecha
+        self.canvas.create_polygon(
+            cx + 58, cy - 18,
+            cx + 76, cy - 46 + inclinacion,
+            cx + 42, cy - 42,
+            fill=chasis, outline=neon, width=2
+        )
 
-        # 5. Cabeza / Cuerpo principal
-        self.canvas.create_oval(34, y, 146, y + 108, fill="#f8fafc", outline=color_principal, width=4)
-        self.canvas.create_oval(39, y + 5, 141, y + 103, fill="#e2e8f0", outline="")
+        # 5. Antena superior con nodo energético
+        self.canvas.create_line(cx, cy - 58, cx, cy - 82, fill=neon, width=2.5)
+        self.canvas.create_oval(cx - 6, cy - 90, cx + 6, cy - 78, fill=neon, outline="#FFFFFF", width=1)
 
-        # 6. Visor facial oscuro
-        self.canvas.create_oval(46, y + 24, 134, y + 84, fill="#0f172a", outline=color_sombra, width=2)
-        self.canvas.create_arc(56, y + 28, 124, y + 50, start=20, extent=140, style="arc", outline="#334155", width=2)
+        # 6. Casco / Cuerpo principal (Hexágono suavizado / Cápsula)
+        self.canvas.create_oval(
+            cx - 64, cy - 58, cx + 64, cy + 58,
+            fill=chasis, outline=neon, width=2.5
+        )
+        # Detalle lateral de auriculares
+        self.canvas.create_rectangle(cx - 70, cy - 14, cx - 60, cy + 16, fill=sec, outline=neon, width=1.5)
+        self.canvas.create_rectangle(cx + 60, cy - 14, cx + 70, cy + 16, fill=sec, outline=neon, width=1.5)
 
-        # 7. Mejillas sonrojadas
-        if estado_actual == "feliz" or self.acariciando:
-            self.canvas.create_oval(52, y + 58, 66, y + 66, fill="#f43f5e", outline="")
-            self.canvas.create_oval(114, y + 58, 128, y + 66, fill="#f43f5e", outline="")
+        # 7. Visor LED Frontal
+        self.canvas.create_oval(
+            cx - 50, cy - 36, cx + 50, cy + 36,
+            fill=visor_bg, outline=sec, width=2
+        )
+        # Reflejo cristal en esquina superior izquierda del visor
+        self.canvas.create_arc(
+            cx - 42, cy - 28, cx + 10, cy + 10,
+            start=110, extent=55, style=tk.ARC, outline="#FFFFFF", width=1.5
+        )
 
-        # 8. Ojos expresivos + Parpadeo
-        if self.parpadeando and estado_actual != "pensando":
-            self.canvas.create_line(58, y + 50, 78, y + 50, fill=color_brillo, width=3, capstyle="round")
-            self.canvas.create_line(102, y + 50, 122, y + 50, fill=color_brillo, width=3, capstyle="round")
-        elif estado_actual == "feliz":
-            self.canvas.create_arc(58, y + 38, 80, y + 60, start=0, extent=180, style="arc", outline=color_brillo, width=4)
-            self.canvas.create_arc(100, y + 38, 122, y + 60, start=0, extent=180, style="arc", outline=color_brillo, width=4)
-            self.canvas.create_arc(82, y + 56, 98, y + 68, start=190, extent=160, style="arc", outline=color_brillo, width=3)
-        elif estado_actual == "sorprendido":
-            self.canvas.create_oval(60, y + 36, 78, y + 58, fill=color_brillo, outline="")
-            self.canvas.create_oval(102, y + 36, 120, y + 58, fill=color_brillo, outline="")
-            self.canvas.create_oval(85, y + 62, 95, y + 72, outline=color_brillo, width=2)
-        elif estado_actual == "pensando":
-            self.canvas.create_line(58, y + 48, 78, y + 48, fill=color_brillo, width=4, capstyle="round")
-            self.canvas.create_oval(104, y + 34, 120, y + 50, fill=color_brillo, outline="")
-            self.canvas.create_oval(108, y + 37, 113, y + 42, fill="#ffffff", outline="")
-        elif estado_actual == "cansado":
-            self.canvas.create_line(58, y + 46, 78, y + 52, fill=color_brillo, width=4, capstyle="round")
-            self.canvas.create_line(102, y + 52, 122, y + 46, fill=color_brillo, width=4, capstyle="round")
+        # 8. Ojos LED Expresivos (con seguimiento del ratón)
+        dx, dy = self.calcular_mirada(cx, cy)
+        ojo_izq_x = cx - 20 + dx
+        ojo_der_x = cx + 20 + dx
+        ojo_y = cy - 4 + dy
+
+        if self.parpadeo or self.emocion == "cansado":
+            # Líneas horizontales cerradas / relajadas
+            self.canvas.create_line(ojo_izq_x - 10, ojo_y, ojo_izq_x + 10, ojo_y, fill=neon, width=3, capstyle=tk.ROUND)
+            self.canvas.create_line(ojo_der_x - 10, ojo_y, ojo_der_x + 10, ojo_y, fill=neon, width=3, capstyle=tk.ROUND)
+        elif self.emocion == "feliz":
+            # Arcos LED sonrientes (^ ^)
+            self.canvas.create_arc(ojo_izq_x - 11, ojo_y - 8, ojo_izq_x + 11, ojo_y + 10, start=0, extent=180, style=tk.ARC, outline=neon, width=3.5)
+            self.canvas.create_arc(ojo_der_x - 11, ojo_y - 8, ojo_der_x + 11, ojo_y + 10, start=0, extent=180, style=tk.ARC, outline=neon, width=3.5)
+        elif self.emocion == "sorprendido":
+            # Ojos LED grandes con núcleo brillante
+            self.canvas.create_oval(ojo_izq_x - 11, ojo_y - 11, ojo_izq_x + 11, ojo_y + 11, outline=neon, width=3)
+            self.canvas.create_oval(ojo_izq_x - 4, ojo_y - 4, ojo_izq_x + 4, ojo_y + 4, fill="#FFFFFF", outline="")
+            self.canvas.create_oval(ojo_der_x - 11, ojo_y - 11, ojo_der_x + 11, ojo_y + 11, outline=neon, width=3)
+            self.canvas.create_oval(ojo_der_x - 4, ojo_y - 4, ojo_der_x + 4, ojo_y + 4, fill="#FFFFFF", outline="")
+        elif self.emocion == "pensando":
+            # Un ojo enfocado y otro escaneando
+            self.canvas.create_oval(ojo_izq_x - 8, ojo_y - 8, ojo_izq_x + 8, ojo_y + 8, fill=neon, outline="")
+            self.canvas.create_rectangle(ojo_der_x - 10, ojo_y - 3, ojo_der_x + 10, ojo_y + 3, fill=neon, outline="")
         else:
-            self.canvas.create_oval(61, y + 38, 77, y + 58, fill=color_brillo, outline="")
-            self.canvas.create_oval(103, y + 38, 119, y + 58, fill=color_brillo, outline="")
-            self.canvas.create_oval(65, y + 41, 70, y + 46, fill="#ffffff", outline="")
-            self.canvas.create_oval(107, y + 41, 112, y + 46, fill="#ffffff", outline="")
+            # Neutral: Ojos digitales redondeados con brillo
+            self.canvas.create_oval(ojo_izq_x - 9, ojo_y - 11, ojo_izq_x + 9, ojo_y + 11, fill=neon, outline="")
+            self.canvas.create_oval(ojo_izq_x - 3, ojo_y - 6, ojo_izq_x + 2, ojo_y - 1, fill="#FFFFFF", outline="")
+            self.canvas.create_oval(ojo_der_x - 9, ojo_y - 11, ojo_der_x + 9, ojo_y + 11, fill=neon, outline="")
+            self.canvas.create_oval(ojo_der_x - 3, ojo_y - 6, ojo_der_x + 2, ojo_y - 1, fill="#FFFFFF", outline="")
+
+        # Mejillas holográficas en estado feliz
+        if self.emocion == "feliz":
+            self.canvas.create_oval(cx - 38, cy + 8, cx - 26, cy + 14, fill=sec, outline="")
+            self.canvas.create_oval(cx + 26, cy + 8, cx + 38, cy + 14, fill=sec, outline="")
+
+        # 9. Boca / Ecualizador de voz LED
+        boca_y = cy + 18 + dy * 0.5
+        if self.hablando:
+            # Barras de ecualizador animadas al hablar
+            for i, offset_x in enumerate([-12, -6, 0, 6, 12]):
+                amp = abs(math.sin(self.tiempo * 18 + i * 1.3)) * 8 + 2
+                self.canvas.create_line(
+                    cx + offset_x, boca_y - amp,
+                    cx + offset_x, boca_y + amp,
+                    fill=neon, width=2.5, capstyle=tk.ROUND
+                )
+        elif self.emocion == "feliz":
+            self.canvas.create_arc(cx - 12, boca_y - 6, cx + 12, boca_y + 8, start=190, extent=160, style=tk.ARC, outline=neon, width=2.5)
+        elif self.emocion == "sorprendido":
+            self.canvas.create_oval(cx - 6, boca_y - 5, cx + 6, boca_y + 7, outline=neon, width=2.5)
+        else:
+            self.canvas.create_line(cx - 10, boca_y, cx + 10, boca_y, fill=neon, width=2.5, capstyle=tk.ROUND)
+
+        # 10. Partículas orbitales cuando está pensando
+        if self.emocion == "pensando":
+            for i in range(3):
+                ang = self.tiempo * 4 + (i * 2.09)
+                px = cx + math.cos(ang) * 84
+                py = cy + math.sin(ang) * 28
+                self.canvas.create_oval(px - 4, py - 4, px + 4, py + 4, fill=neon, outline="#FFFFFF", width=1)
 
     def animar(self):
-        limite = 7 if (self.emocion in ("feliz", "sorprendido") or self.acariciando) else 3
-        self.offset_y += self.direccion
-        if abs(self.offset_y) >= limite:
-            self.direccion *= -1
-        self.dibujar_avatar()
-        self.root.after(55, self.animar)
+        self.tiempo += 0.05
+        ahora = time.time()
+
+        # Lógica de parpadeo natural
+        if not self.parpadeo and ahora >= self.proximo_parpadeo:
+            self.parpadeo = True
+            self.fin_parpadeo = ahora + 0.14
+        elif self.parpadeo and ahora >= self.fin_parpadeo:
+            self.parpadeo = False
+            self.proximo_parpadeo = ahora + random.uniform(2.5, 5.5)
+
+        self.dibujar_robot()
+        self.root.after(33, self.animar)
+
+    def aplicar_tema_hud(self, emocion, estado_custom=None):
+        tema = TEMAS_EMOCION.get(emocion, TEMAS_EMOCION["neutral"])
+        self.hud_frame.configure(highlightbackground=tema["neon"])
+        self.lbl_estado.configure(
+            text=estado_custom or tema["estado"],
+            fg=tema["neon"]
+        )
+        self.btn_enviar.configure(bg=tema["neon"])
 
     def enviar_mensaje(self, event=None):
-        texto_usuario = self.entrada.get().strip()
-        if not texto_usuario:
+        mensaje = self.entry.get().strip()
+        if not mensaje:
             return
 
-        self.ultimo_mensaje_usuario = texto_usuario
-        self.entrada.delete(0, tk.END)
-        self.entrada.config(state="disabled")
+        self.entry.delete(0, tk.END)
         self.emocion = "pensando"
-        self.globo.config(text="Pensando...")
+        self.aplicar_tema_hud("pensando")
+        self.lbl_texto.configure(text="Procesando solicitud en el núcleo local...")
 
-        threading.Thread(target=self.consultar_cerebro, daemon=True).start()
+        hilo = threading.Thread(target=self.consultar_n8n, args=(mensaje,), daemon=True)
+        hilo.start()
 
-    def consultar_cerebro(self):
-        payload = {"mensaje": self.ultimo_mensaje_usuario}
+    def consultar_n8n(self, mensaje):
         try:
-            req = urllib.request.Request(
-                N8N_WEBHOOK_URL,
-                data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"}
-            )
-            with urllib.request.urlopen(req, timeout=120) as res:
-                contenido = json.loads(res.read().decode("utf-8"))
-                texto = contenido.get("texto", "...")
-                emocion = contenido.get("emocion", "neutral").lower()
+            payload = {"mensaje": mensaje, "sessionId": SESSION_ID}
+            resp = requests.post(WEBHOOK_URL, json=payload, timeout=90)
+            resp.raise_for_status()
+            data = resp.json()
+
+            if isinstance(data, list) and len(data) > 0:
+                data = data[0]
+
+            texto = data.get("texto", "Listo.")
+            emocion = data.get("emocion", "feliz").lower()
+            if emocion not in TEMAS_EMOCION:
+                emocion = "feliz"
+
+            self.root.after(0, lambda: self.mostrar_respuesta(texto, emocion, hablar=True))
         except Exception as e:
-            texto = f"Error con n8n: {e}"
-            emocion = "cansado"
+            err_msg = f"Error de enlace con n8n: {str(e)[:60]}"
+            self.root.after(0, lambda: self.mostrar_respuesta(err_msg, "sorprendido", hablar=False))
 
-        self.root.after(0, self.actualizar_ui, texto, emocion)
+    def mostrar_respuesta(self, texto, emocion, hablar=True):
+        self.emocion = emocion
+        self.lbl_texto.configure(text=texto)
+        self.aplicar_tema_hud(emocion)
 
-    def hablar(self, texto):
-        if not self.voz_activa:
-            return
+        if hablar and self.voz_activa:
+            threading.Thread(target=self.hablar_texto, args=(texto,), daemon=True).start()
 
-        def _ejecutar_voz():
-            texto_limpio = texto.replace('"', '').replace("'", "").replace("\n", " ")
-            comando_ps = (
-                'Add-Type -AssemblyName System.Speech; '
-                '$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer; '
-                '$synth.Rate = 1; '
-                f'$synth.Speak("{texto_limpio}");'
+    def hablar_texto(self, texto):
+        self.hablando = True
+        self.root.after(0, lambda: self.aplicar_tema_hud(self.emocion, "🔊 HABLANDO"))
+        try:
+            texto_limpio = texto.replace('"', "'").replace("\n", " ")
+            cmd = (
+                f'Add-Type -AssemblyName System.Speech; '
+                f'$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; '
+                f'$s.Rate = 1; '
+                f'$s.Speak("{texto_limpio}")'
             )
             subprocess.run(
-                ["powershell", "-NoProfile", "-Command", comando_ps],
+                ["powershell", "-NoProfile", "-Command", cmd],
                 creationflags=subprocess.CREATE_NO_WINDOW
             )
-
-        threading.Thread(target=_ejecutar_voz, daemon=True).start()
-
-    def actualizar_ui(self, texto, emocion):
-        self.globo.config(text=texto)
-        self.emocion = emocion
-        self.entrada.config(state="normal")
-        self.entrada.focus_set()
-        self.hablar(texto)
+        except Exception:
+            pass
+        finally:
+            self.hablando = False
+            self.root.after(0, lambda: self.aplicar_tema_hud(self.emocion))
 
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = MascotaTkinter(root)
+    app = JollyCyberPet(root)
     root.mainloop()
